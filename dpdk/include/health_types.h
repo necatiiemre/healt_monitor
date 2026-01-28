@@ -17,6 +17,9 @@
 // Device header size (from UDP payload start)
 #define HEALTH_DEVICE_HEADER_SIZE    111
 
+// Mini header size for packets without full device header
+#define HEALTH_MINI_HEADER_SIZE      9   // DevID(2) + OpType(1) + CfgType(1) + FrameLen(2) + Reserved(3)
+
 // Port data constants
 #define HEALTH_PORT_DATA_SIZE        129
 #define HEALTH_MAX_PORTS             35

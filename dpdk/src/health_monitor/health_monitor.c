@@ -165,13 +165,13 @@ static void health_parse_response(const uint8_t *packet, size_t len, struct heal
         port_count_in_packet = 8;
         port_data_offset = HEALTH_DEVICE_HEADER_SIZE;
     } else if (len == HEALTH_PKT_SIZE_8_PORTS) {
-        // 1083 bytes: 8 ports (no header)
+        // 1083 bytes: Mini header (9 bytes) + 8 ports
         port_count_in_packet = 8;
-        port_data_offset = 0;
+        port_data_offset = HEALTH_MINI_HEADER_SIZE;
     } else if (len == HEALTH_PKT_SIZE_3_PORTS) {
-        // 438 bytes: 3 ports
+        // 438 bytes: Mini header (9 bytes) + 3 ports
         port_count_in_packet = 3;
-        port_data_offset = 0;
+        port_data_offset = HEALTH_MINI_HEADER_SIZE;
     } else if (len == HEALTH_PKT_SIZE_MCU) {
         // 84 bytes: MCU data - skip
         return;

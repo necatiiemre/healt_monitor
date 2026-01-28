@@ -150,6 +150,9 @@ static void parse_port_data(const uint8_t *port_data, struct health_port_info *p
 
 static void health_parse_response(const uint8_t *packet, size_t len, struct health_cycle_data *cycle)
 {
+    // DEBUG: Print packet size
+    printf("[HEALTH-DBG] Received packet size: %zu bytes\n", len);
+
     // Get UDP payload pointer
     const uint8_t *udp_payload = packet + HEALTH_UDP_PAYLOAD_OFFSET;
     size_t payload_len = len - HEALTH_UDP_PAYLOAD_OFFSET;
@@ -161,22 +164,27 @@ static void health_parse_response(const uint8_t *packet, size_t len, struct heal
 
     if (len == HEALTH_PKT_SIZE_WITH_HEADER) {
         // 1187 bytes: Device header + 8 ports
+        printf("[HEALTH-DBG] Packet type: WITH_HEADER (1187), offset=%d\n", HEALTH_DEVICE_HEADER_SIZE);
         has_device_header = true;
         port_count_in_packet = 8;
         port_data_offset = HEALTH_DEVICE_HEADER_SIZE;
     } else if (len == HEALTH_PKT_SIZE_8_PORTS) {
-        // 1083 bytes: Mini header (9 bytes) + 8 ports
+        // 1083 bytes: Mini header + 8 ports
+        printf("[HEALTH-DBG] Packet type: 8_PORTS (1083), offset=%d\n", HEALTH_MINI_HEADER_SIZE);
         port_count_in_packet = 8;
         port_data_offset = HEALTH_MINI_HEADER_SIZE;
     } else if (len == HEALTH_PKT_SIZE_3_PORTS) {
-        // 438 bytes: Mini header (9 bytes) + 3 ports
+        // 438 bytes: Mini header + 3 ports
+        printf("[HEALTH-DBG] Packet type: 3_PORTS (438), offset=%d\n", HEALTH_MINI_HEADER_SIZE);
         port_count_in_packet = 3;
         port_data_offset = HEALTH_MINI_HEADER_SIZE;
     } else if (len == HEALTH_PKT_SIZE_MCU) {
         // 84 bytes: MCU data - skip
+        printf("[HEALTH-DBG] Packet type: MCU (84) - SKIPPING\n");
         return;
     } else {
         // Unknown packet size - skip
+        printf("[HEALTH-DBG] Packet type: UNKNOWN size %zu - SKIPPING\n", len);
         return;
     }
 
@@ -186,23 +194,34 @@ static void health_parse_response(const uint8_t *packet, size_t len, struct heal
         cycle->device_info_valid = true;
     }
 
-    // Parse port data
+    // DEBUG: Print first few bytes of port data area
     const uint8_t *port_ptr = udp_payload + port_data_offset;
+    printf("[HEALTH-DBG] Port data starts at offset %d, first bytes: %02X %02X %02X %02X\n",
+           port_data_offset, port_ptr[0], port_ptr[1], port_ptr[2], port_ptr[3]);
+
+    // Parse port data
     for (int i = 0; i < port_count_in_packet; i++) {
         struct health_port_info temp_port;
         memset(&temp_port, 0, sizeof(temp_port));
         parse_port_data(port_ptr, &temp_port);
 
+        // DEBUG: Print parsed port number
+        printf("[HEALTH-DBG] Parsed port %d: port_number=%d (0x%04X)\n",
+               i, temp_port.port_number, temp_port.port_number);
+
         // Store in correct slot by port number
         uint16_t pnum = temp_port.port_number;
         if (pnum < HEALTH_MAX_PORTS) {
             cycle->ports[pnum] = temp_port;
+        } else {
+            printf("[HEALTH-DBG] WARNING: Port number %d out of range!\n", pnum);
         }
 
         port_ptr += HEALTH_PORT_DATA_SIZE;
     }
 
     cycle->responses_received++;
+    printf("[HEALTH-DBG] Response count now: %d\n", cycle->responses_received);
 }
 
 // ==========================================
@@ -394,11 +413,16 @@ static int receive_health_responses(int timeout_ms, struct health_cycle_data *cy
                 break;
             }
 
+            // DEBUG: Show all received packets
+            printf("[HEALTH-DBG] RAW recv: len=%zd, DST_MAC[4:5]=%02X:%02X\n",
+                   len, buffer[4], buffer[5]);
+
             // Check if this is a health response and parse it
             if (is_health_response(buffer, len)) {
                 health_parse_response(buffer, len, cycle);
+            } else {
+                printf("[HEALTH-DBG] Packet FILTERED (not health response)\n");
             }
-            // else: ignore (PRBS or other traffic)
         }
     }
 

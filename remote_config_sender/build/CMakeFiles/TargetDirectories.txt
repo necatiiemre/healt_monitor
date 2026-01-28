@@ -1,0 +1,3 @@
+/home/user/Desktop/remote_config_sender/build/CMakeFiles/remote_config_sender.dir
+/home/user/Desktop/remote_config_sender/build/CMakeFiles/edit_cache.dir
+/home/user/Desktop/remote_config_sender/build/CMakeFiles/rebuild_cache.dir

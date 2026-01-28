@@ -19,6 +19,7 @@
 #include "dpdk_external_tx.h" // DPDK External TX (independent system)
 #include "embedded_latency/embedded_latency.h"  // Embedded HW timestamp latency test
 #include "ptp_slave.h"        // PTP slave for IEEE 1588v2 synchronization
+#include "health_monitor.h"   // Health monitor for DTN status queries
 
 // Enable/disable raw socket ports
 #ifndef ENABLE_RAW_SOCKET_PORTS
@@ -426,6 +427,19 @@ int main(int argc, char const *argv[])
             printf("Raw socket workers started successfully\n");
         }
     }
+
+    // Initialize and start Health Monitor (runs on Port 13, independent from PRBS)
+#if HEALTH_MONITOR_ENABLED
+    printf("\n=== Initializing Health Monitor ===\n");
+    if (init_health_monitor() == 0) {
+        if (start_health_monitor(&force_quit) != 0) {
+            printf("Warning: Failed to start health monitor\n");
+        }
+    } else {
+        printf("Warning: Failed to initialize health monitor\n");
+    }
+#endif
+
 #endif
 
     // Start DPDK External TX workers AFTER raw socket workers
@@ -573,6 +587,15 @@ int main(int argc, char const *argv[])
     ptp_stop();
 #endif
 
+#if HEALTH_MONITOR_ENABLED
+    // Stop health monitor
+    if (is_health_monitor_running()) {
+        printf("Stopping health monitor...\n");
+        print_health_monitor_stats();  // Final stats
+        stop_health_monitor();
+    }
+#endif
+
 #if ENABLE_RAW_SOCKET_PORTS
     // Stop raw socket workers first (only if initialized)
     if (raw_ports_initialized)
@@ -592,6 +615,10 @@ int main(int argc, char const *argv[])
     // Cleanup
 #if PTP_ENABLED
     ptp_cleanup();
+#endif
+
+#if HEALTH_MONITOR_ENABLED
+    cleanup_health_monitor();
 #endif
 
 #if ENABLE_RAW_SOCKET_PORTS

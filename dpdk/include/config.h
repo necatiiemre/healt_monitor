@@ -632,4 +632,18 @@ struct ptp_session_config
     {.rx_port_id = 0, .rx_vlan = 256, .tx_port_id = 7, .tx_vlan = 128, .tx_vl_idx = 4482}, /* DTN Port 0: RX=Port5/VLAN225, TX=Port2/VLAN97/VL-IDX4420 */ \
 }
 
+// ==========================================
+// HEALTH MONITOR CONFIGURATION
+// ==========================================
+// Health Monitor sends periodic queries to DTN and receives status responses.
+// Runs on Port 13 (eno12409) independently from PRBS traffic.
+//
+// Query: 64 byte packet sent every 1 second
+// Response: 6 packets with VL_IDX=4484 (0x1184) in DST MAC[4:5]
+// Timeout: 500ms per cycle
+
+#ifndef HEALTH_MONITOR_ENABLED
+#define HEALTH_MONITOR_ENABLED 1
+#endif
+
 #endif /* CONFIG_H */

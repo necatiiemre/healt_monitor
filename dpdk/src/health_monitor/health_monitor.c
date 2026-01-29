@@ -63,25 +63,193 @@ static uint64_t get_time_ms(void)
     return (uint64_t)ts.tv_sec * 1000ULL + (uint64_t)ts.tv_nsec / 1000000ULL;
 }
 
-static void hex_dump(const char *prefix, const uint8_t *data, size_t len)
+// ==========================================
+// BYTE PARSING FUNCTIONS (Big-Endian)
+// ==========================================
+
+static inline uint16_t parse_2byte_be(const uint8_t *data)
 {
-    printf("%s (len=%zu):\n", prefix, len);
+    return ((uint16_t)data[0] << 8) | (uint16_t)data[1];
+}
 
-    for (size_t i = 0; i < len; i += 16) {
-        printf("  %04zx: ", i);
+static inline uint32_t parse_4byte_be(const uint8_t *data)
+{
+    return ((uint32_t)data[0] << 24) | ((uint32_t)data[1] << 16) |
+           ((uint32_t)data[2] << 8)  | (uint32_t)data[3];
+}
 
-        // Hex bytes
-        for (size_t j = 0; j < 16; j++) {
-            if (i + j < len) {
-                printf("%02x ", data[i + j]);
-            } else {
-                printf("   ");
-            }
-            if (j == 7) printf(" ");
+static inline uint64_t parse_6byte_be(const uint8_t *data)
+{
+    return ((uint64_t)data[0] << 40) | ((uint64_t)data[1] << 32) |
+           ((uint64_t)data[2] << 24) | ((uint64_t)data[3] << 16) |
+           ((uint64_t)data[4] << 8)  | (uint64_t)data[5];
+}
+
+// ==========================================
+// DEVICE HEADER PARSING
+// ==========================================
+
+static void parse_device_header(const uint8_t *udp_payload, struct health_device_info *dev)
+{
+    dev->device_id       = parse_2byte_be(udp_payload + DEV_OFF_DEVICE_ID);
+    dev->operation_type  = udp_payload[DEV_OFF_OPERATION_TYPE];
+    dev->config_type     = udp_payload[DEV_OFF_CONFIG_TYPE];
+    dev->frame_length    = parse_2byte_be(udp_payload + DEV_OFF_FRAME_LENGTH);
+    dev->status_enable   = udp_payload[DEV_OFF_STATUS_ENABLE];
+    dev->tx_total_count  = parse_6byte_be(udp_payload + DEV_OFF_TX_TOTAL_COUNT);
+    dev->rx_total_count  = parse_6byte_be(udp_payload + DEV_OFF_RX_TOTAL_COUNT);
+    dev->port_count      = udp_payload[DEV_OFF_PORT_COUNT];
+    dev->sw_mode         = udp_payload[DEV_OFF_SW_MODE];
+
+    // Firmware version: bytes 48, 49, 50 (last 3 bytes of 6-byte field)
+    dev->fw_major = udp_payload[DEV_OFF_FW_VERSION + 3];
+    dev->fw_minor = udp_payload[DEV_OFF_FW_VERSION + 4];
+    dev->fw_patch = udp_payload[DEV_OFF_FW_VERSION + 5];
+
+    // Embedded ES firmware version: bytes 54, 55, 56
+    dev->es_fw_major = udp_payload[DEV_OFF_ES_FW_VERSION + 3];
+    dev->es_fw_minor = udp_payload[DEV_OFF_ES_FW_VERSION + 4];
+    dev->es_fw_patch = udp_payload[DEV_OFF_ES_FW_VERSION + 5];
+
+    dev->egi_time_sec   = parse_4byte_be(udp_payload + DEV_OFF_EGI_TIME_SEC);
+    dev->power_up_time  = parse_4byte_be(udp_payload + DEV_OFF_POWER_UP_TIME);
+    dev->instant_time   = parse_4byte_be(udp_payload + DEV_OFF_INSTANT_TIME);
+    dev->fpga_temp      = parse_2byte_be(udp_payload + DEV_OFF_FPGA_TEMP);
+    dev->fpga_voltage   = parse_2byte_be(udp_payload + DEV_OFF_FPGA_VOLTAGE);
+    dev->config_id      = parse_2byte_be(udp_payload + DEV_OFF_CONFIG_ID);
+}
+
+// ==========================================
+// PORT DATA PARSING
+// ==========================================
+
+static void parse_port_data(const uint8_t *port_data, struct health_port_info *port)
+{
+    port->port_number        = parse_2byte_be(port_data + PORT_OFF_PORT_NUMBER);
+    port->bit_status         = port_data[PORT_OFF_BIT_STATUS];
+    port->crc_err_count      = parse_6byte_be(port_data + PORT_OFF_CRC_ERR_CNT);
+    port->min_vl_frame_err   = parse_6byte_be(port_data + PORT_OFF_MIN_VL_FRAME_ERR);
+    port->max_vl_frame_err   = parse_6byte_be(port_data + PORT_OFF_MAX_VL_FRAME_ERR);
+    port->traffic_policy_drop = parse_6byte_be(port_data + PORT_OFF_TRAFFIC_POLICY_DROP);
+    port->be_count           = parse_6byte_be(port_data + PORT_OFF_BE_COUNT);
+    port->tx_count           = parse_6byte_be(port_data + PORT_OFF_TX_COUNT);
+    port->rx_count           = parse_6byte_be(port_data + PORT_OFF_RX_COUNT);
+    port->vl_source_err      = parse_6byte_be(port_data + PORT_OFF_VL_SOURCE_ERR);
+    port->max_delay_err      = parse_6byte_be(port_data + PORT_OFF_MAX_DELAY_ERR);
+    port->vlid_drop_count    = parse_6byte_be(port_data + PORT_OFF_VLID_DROP);
+    port->undef_mac_count    = parse_6byte_be(port_data + PORT_OFF_UNDEF_MAC);
+    port->hp_queue_overflow  = parse_6byte_be(port_data + PORT_OFF_HP_QUEUE_OVERFLOW);
+    port->lp_queue_overflow  = parse_6byte_be(port_data + PORT_OFF_LP_QUEUE_OVERFLOW);
+    port->be_queue_overflow  = parse_6byte_be(port_data + PORT_OFF_BE_QUEUE_OVERFLOW);
+    port->valid = true;
+}
+
+// ==========================================
+// RESPONSE PARSING
+// ==========================================
+
+static void health_parse_response(const uint8_t *packet, size_t len, struct health_cycle_data *cycle)
+{
+    // Get UDP payload pointer
+    const uint8_t *udp_payload = packet + HEALTH_UDP_PAYLOAD_OFFSET;
+    size_t payload_len = len - HEALTH_UDP_PAYLOAD_OFFSET;
+
+    // Determine packet type by size
+    bool has_device_header = false;
+    int port_count_in_packet = 0;
+    int port_data_offset = 0;
+
+    if (len == HEALTH_PKT_SIZE_WITH_HEADER) {
+        // 1187 bytes: Device header + 8 ports
+        has_device_header = true;
+        port_count_in_packet = 8;
+        port_data_offset = HEALTH_DEVICE_HEADER_SIZE;
+    } else if (len == HEALTH_PKT_SIZE_8_PORTS) {
+        // 1083 bytes: Mini header + 8 ports
+        port_count_in_packet = 8;
+        port_data_offset = HEALTH_MINI_HEADER_SIZE;
+    } else if (len == HEALTH_PKT_SIZE_3_PORTS) {
+        // 438 bytes: Mini header + 3 ports
+        port_count_in_packet = 3;
+        port_data_offset = HEALTH_MINI_HEADER_SIZE;
+    } else if (len == HEALTH_PKT_SIZE_MCU) {
+        // 84 bytes: MCU data - skip
+        return;
+    } else {
+        // Unknown packet size - skip
+        return;
+    }
+
+    // Parse device header if present (only once per cycle)
+    if (has_device_header && !cycle->device_info_valid) {
+        parse_device_header(udp_payload, &cycle->device);
+        cycle->device_info_valid = true;
+    }
+
+    // Parse port data
+    const uint8_t *port_ptr = udp_payload + port_data_offset;
+    for (int i = 0; i < port_count_in_packet; i++) {
+        struct health_port_info temp_port;
+        memset(&temp_port, 0, sizeof(temp_port));
+        parse_port_data(port_ptr, &temp_port);
+
+        // Store in correct slot by port number
+        uint16_t pnum = temp_port.port_number;
+        if (pnum < HEALTH_MAX_PORTS) {
+            cycle->ports[pnum] = temp_port;
         }
 
-        printf("\n");
+        port_ptr += HEALTH_PORT_DATA_SIZE;
     }
+
+    cycle->responses_received++;
+}
+
+// ==========================================
+// TABLE PRINTING
+// ==========================================
+
+static void health_print_table(const struct health_cycle_data *cycle)
+{
+    const struct health_device_info *dev = &cycle->device;
+
+    // Device Status Header
+    printf("[HEALTH] ============ Device Status ============\n");
+    printf("[HEALTH] DevID=0x%04X | OpType=0x%02X | CfgType=0x%02X | Mode=0x%02X | Ports=%d\n",
+           dev->device_id, dev->operation_type, dev->config_type, dev->sw_mode, dev->port_count);
+    printf("[HEALTH] FW=%d.%d.%d | ES_FW=%d.%d.%d | ConfigID=%d\n",
+           dev->fw_major, dev->fw_minor, dev->fw_patch,
+           dev->es_fw_major, dev->es_fw_minor, dev->es_fw_patch,
+           dev->config_id);
+    printf("[HEALTH] Temp=%d | Volt=%d | EGI=%us | PowerUp=%us | InstTime=%us\n",
+           dev->fpga_temp, dev->fpga_voltage, dev->egi_time_sec, dev->power_up_time, dev->instant_time);
+    printf("[HEALTH] TxTotal=%lu | RxTotal=%lu\n",
+           (unsigned long)dev->tx_total_count, (unsigned long)dev->rx_total_count);
+
+    // Port Status Table Header
+    printf("[HEALTH] ============ Port Status (%d/%d received) ============\n",
+           cycle->responses_received, HEALTH_MONITOR_EXPECTED_RESPONSES);
+    printf("[HEALTH] Port |    TxCnt |    RxCnt | PolDrop | VLDrop | HP_Ovf | LP_Ovf | BE_Ovf |\n");
+    printf("[HEALTH] -----|----------|----------|---------|--------|--------|--------|--------|\n");
+
+    // Port Data Rows (sorted 0-34)
+    for (int i = 0; i < HEALTH_MAX_PORTS; i++) {
+        const struct health_port_info *p = &cycle->ports[i];
+        if (p->valid) {
+            printf("[HEALTH] %4d | %8lu | %8lu | %7lu | %6lu | %6lu | %6lu | %6lu |\n",
+                   i,
+                   (unsigned long)p->tx_count,
+                   (unsigned long)p->rx_count,
+                   (unsigned long)p->traffic_policy_drop,
+                   (unsigned long)p->vlid_drop_count,
+                   (unsigned long)p->hp_queue_overflow,
+                   (unsigned long)p->lp_queue_overflow,
+                   (unsigned long)p->be_queue_overflow);
+        } else {
+            printf("[HEALTH] %4d |      N/A |      N/A |     N/A |    N/A |    N/A |    N/A |    N/A |\n", i);
+        }
+    }
+    printf("[HEALTH] ================================================\n");
 }
 
 static int get_interface_index(const char *ifname)
@@ -188,14 +356,13 @@ static bool is_health_response(const uint8_t *packet, size_t len)
     return false;
 }
 
-static int receive_health_responses(int timeout_ms, uint8_t *response_count)
+static int receive_health_responses(int timeout_ms, struct health_cycle_data *cycle)
 {
     struct health_monitor_state *state = &g_health_monitor;
     uint8_t buffer[HEALTH_MONITOR_RX_BUFFER_SIZE];
-    uint8_t received = 0;
     uint64_t start_time = get_time_ms();
 
-    while (received < HEALTH_MONITOR_EXPECTED_RESPONSES) {
+    while (cycle->responses_received < HEALTH_MONITOR_EXPECTED_RESPONSES) {
         // Calculate remaining timeout
         uint64_t elapsed = get_time_ms() - start_time;
         if (elapsed >= (uint64_t)timeout_ms) {
@@ -227,19 +394,14 @@ static int receive_health_responses(int timeout_ms, uint8_t *response_count)
                 break;
             }
 
-            // Check if this is a health response
+            // Check if this is a health response and parse it
             if (is_health_response(buffer, len)) {
-                received++;
-                char prefix[64];
-                snprintf(prefix, sizeof(prefix), "[HEALTH] Response %u/%d",
-                         received, HEALTH_MONITOR_EXPECTED_RESPONSES);
-                hex_dump(prefix, buffer, len);
+                health_parse_response(buffer, len, cycle);
             }
-            // else: ignore (PRBS or other traffic)
+            // else: ignore non-health packets (PRBS traffic etc.)
         }
     }
 
-    *response_count = received;
     return 0;
 }
 
@@ -251,13 +413,17 @@ static void *health_monitor_thread_func(void *arg)
 {
     (void)arg;
     struct health_monitor_state *state = &g_health_monitor;
+    struct health_cycle_data cycle;
 
     printf("[HEALTH] Thread started\n");
 
     while (!(*g_stop_flag) && state->running) {
         uint64_t cycle_start = get_time_ms();
 
-        // 1. Send query
+        // 1. Reset cycle data
+        memset(&cycle, 0, sizeof(cycle));
+
+        // 2. Send query
         if (send_health_query() < 0) {
             // Error sending, wait and retry
             usleep(100000);  // 100ms
@@ -270,35 +436,33 @@ static void *health_monitor_thread_func(void *arg)
         state->stats.current_sequence = state->sequence;
         pthread_spin_unlock(&state->stats_lock);
 
-        // 2. Receive responses
-        uint8_t response_count = 0;
-        receive_health_responses(HEALTH_MONITOR_RESPONSE_TIMEOUT_MS, &response_count);
+        // 3. Receive and parse responses
+        receive_health_responses(HEALTH_MONITOR_RESPONSE_TIMEOUT_MS, &cycle);
 
         uint64_t cycle_end = get_time_ms();
         uint64_t cycle_time = cycle_end - cycle_start;
 
-        // 3. Log cycle result
-        printf("[HEALTH] Cycle complete: %u/%d responses in %lums\n",
-               response_count, HEALTH_MONITOR_EXPECTED_RESPONSES, (unsigned long)cycle_time);
+        // 4. Print parsed data table
+        health_print_table(&cycle);
 
-        // 4. Update statistics
+        // 5. Update statistics
         pthread_spin_lock(&state->stats_lock);
-        state->stats.responses_received += response_count;
+        state->stats.responses_received += cycle.responses_received;
         state->stats.last_cycle_time_ms = cycle_time;
-        state->stats.last_response_count = response_count;
-        if (response_count < HEALTH_MONITOR_EXPECTED_RESPONSES) {
+        state->stats.last_response_count = cycle.responses_received;
+        if (cycle.responses_received < HEALTH_MONITOR_EXPECTED_RESPONSES) {
             state->stats.timeouts++;
         }
         pthread_spin_unlock(&state->stats_lock);
 
-        // 5. Increment sequence (255 -> 1, skip 0)
+        // 6. Increment sequence (255 -> 1, skip 0)
         if (state->sequence >= 255) {
             state->sequence = 1;
         } else {
             state->sequence++;
         }
 
-        // 6. Wait for remaining time to complete 1 second interval
+        // 7. Wait for remaining time to complete 1 second interval
         uint64_t elapsed = get_time_ms() - cycle_start;
         if (elapsed < HEALTH_MONITOR_QUERY_INTERVAL_MS) {
             usleep((HEALTH_MONITOR_QUERY_INTERVAL_MS - elapsed) * 1000);

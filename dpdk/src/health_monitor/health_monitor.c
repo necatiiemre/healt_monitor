@@ -13,6 +13,7 @@
 #include <linux/if_packet.h>
 #include <arpa/inet.h>
 #include <poll.h>
+#include <linux/filter.h>
 
 // ==========================================
 // GLOBAL STATE
@@ -197,34 +198,17 @@ static void health_parse_response(const uint8_t *packet, size_t len, struct heal
         port_data_offset = HEALTH_MINI_HEADER_SIZE;
     } else if (len == HEALTH_PKT_SIZE_MCU) {
         // 84 bytes: MCU data - skip
-        printf("[HEALTH][DBG] Skipping MCU packet (size=%zu)\n", len);
         return;
     } else {
         // Unknown packet size - skip
-        printf("[HEALTH][DBG] Unknown packet size=%zu, skipping\n", len);
         return;
-    }
-
-    printf("[HEALTH][DBG] Packet size=%zu, has_dev_hdr=%d, port_count=%d\n",
-           len, has_device_header, port_count_in_packet);
-
-    if (has_device_header) {
-        printf("[HEALTH][DBG] status_enable=0x%02X\n", udp_payload[DEV_OFF_STATUS_ENABLE]);
-    } else {
-        uint16_t fp = parse_2byte_be(udp_payload + port_data_offset + PORT_OFF_PORT_NUMBER);
-        printf("[HEALTH][DBG] first_port=%u\n", fp);
     }
 
     // Determine which switch this packet belongs to
     struct health_switch_data *sw = determine_switch(udp_payload, has_device_header,
                                                       port_data_offset, cycle);
-    if (!sw) {
-        printf("[HEALTH][DBG] determine_switch returned NULL, skipping\n");
+    if (!sw)
         return;  // MCU or unknown status
-    }
-
-    printf("[HEALTH][DBG] Routed to %s switch\n",
-           (sw == &cycle->manager) ? "Manager" : "Assistant");
 
     // Parse device header if present (only once per switch)
     if (has_device_header && !sw->device_info_valid) {
@@ -398,6 +382,28 @@ static int create_raw_socket(const char *ifname, int if_index)
         // Continue anyway
     }
 
+    // BPF filter: accept only packets where DST MAC bytes [4:5] == 0x11 0x84 (VL_IDX=0x1184)
+    // This filters out PRBS traffic at kernel level, preventing socket flood
+    struct sock_filter bpf_code[] = {
+        // Load half-word (2 bytes) at offset 4 of the packet (DST MAC bytes 4-5)
+        { BPF_LD | BPF_H | BPF_ABS, 0, 0, 4 },
+        // Jump if equal to 0x1184 -> accept (offset 0), else -> reject (offset 1)
+        { BPF_JMP | BPF_JEQ | BPF_K, 0, 1, 0x1184 },
+        // Accept: return max packet size
+        { BPF_RET | BPF_K, 0, 0, 0xFFFFFFFF },
+        // Reject: return 0
+        { BPF_RET | BPF_K, 0, 0, 0 },
+    };
+    struct sock_fprog bpf_prog = {
+        .len = sizeof(bpf_code) / sizeof(bpf_code[0]),
+        .filter = bpf_code,
+    };
+
+    if (setsockopt(sock, SOL_SOCKET, SO_ATTACH_FILTER, &bpf_prog, sizeof(bpf_prog)) < 0) {
+        fprintf(stderr, "[HEALTH] Warning: Failed to attach BPF filter: %s\n", strerror(errno));
+        // Continue without filter - will work but slower due to userspace filtering
+    }
+
     return sock;
 }
 
@@ -453,14 +459,10 @@ static int receive_health_responses(int timeout_ms, struct health_cycle_data *cy
     uint8_t buffer[HEALTH_MONITOR_RX_BUFFER_SIZE];
     uint64_t start_time = get_time_ms();
 
-    printf("[HEALTH][DBG] receive_health_responses entered, timeout=%dms, total_responses=%d\n",
-           timeout_ms, cycle->total_responses);
-
     while (cycle->total_responses < HEALTH_MONITOR_EXPECTED_RESPONSES) {
         // Calculate remaining timeout
         uint64_t elapsed = get_time_ms() - start_time;
         if (elapsed >= (uint64_t)timeout_ms) {
-            printf("[HEALTH][DBG] Timeout after %lums\n", (unsigned long)elapsed);
             break;  // Timeout
         }
         int remaining = timeout_ms - (int)elapsed;
@@ -478,7 +480,6 @@ static int receive_health_responses(int timeout_ms, struct health_cycle_data *cy
         }
 
         if (ret == 0) {
-            printf("[HEALTH][DBG] Poll timeout, no packets\n");
             break;  // Timeout
         }
 
@@ -490,15 +491,11 @@ static int receive_health_responses(int timeout_ms, struct health_cycle_data *cy
                 break;
             }
 
-            printf("[HEALTH][DBG] Recv packet len=%zd, is_health=%d\n",
-                   len, is_health_response(buffer, len));
-
             // Check if this is a health response and parse it
             if (is_health_response(buffer, len)) {
-                printf("[HEALTH][DBG] Health response received, len=%zd\n", len);
                 health_parse_response(buffer, len, cycle);
             }
-            // else: ignore non-health packets (PRBS traffic etc.)
+            // else: ignore non-health packets
         }
     }
 

@@ -148,11 +148,34 @@ static void parse_port_data(const uint8_t *port_data, struct health_port_info *p
 // RESPONSE PARSING
 // ==========================================
 
+static struct health_switch_data *determine_switch(const uint8_t *udp_payload,
+                                                    bool has_device_header,
+                                                    int port_data_offset,
+                                                    struct health_cycle_data *cycle)
+{
+    if (has_device_header) {
+        // Use status_enable field from device header
+        uint8_t status = udp_payload[DEV_OFF_STATUS_ENABLE];
+        if (status == HEALTH_STATUS_MANAGER)
+            return &cycle->manager;
+        else if (status == HEALTH_STATUS_ASSISTANT)
+            return &cycle->assistant;
+        else
+            return NULL;  // MCU or unknown
+    }
+
+    // Mini header: determine by first port number
+    uint16_t first_port = parse_2byte_be(udp_payload + port_data_offset + PORT_OFF_PORT_NUMBER);
+    if (first_port < HEALTH_ASSISTANT_PORT_COUNT)
+        return &cycle->assistant;
+    else
+        return &cycle->manager;
+}
+
 static void health_parse_response(const uint8_t *packet, size_t len, struct health_cycle_data *cycle)
 {
     // Get UDP payload pointer
     const uint8_t *udp_payload = packet + HEALTH_UDP_PAYLOAD_OFFSET;
-    size_t payload_len = len - HEALTH_UDP_PAYLOAD_OFFSET;
 
     // Determine packet type by size
     bool has_device_header = false;
@@ -180,10 +203,16 @@ static void health_parse_response(const uint8_t *packet, size_t len, struct heal
         return;
     }
 
-    // Parse device header if present (only once per cycle)
-    if (has_device_header && !cycle->device_info_valid) {
-        parse_device_header(udp_payload, &cycle->device);
-        cycle->device_info_valid = true;
+    // Determine which switch this packet belongs to
+    struct health_switch_data *sw = determine_switch(udp_payload, has_device_header,
+                                                      port_data_offset, cycle);
+    if (!sw)
+        return;  // MCU or unknown status
+
+    // Parse device header if present (only once per switch)
+    if (has_device_header && !sw->device_info_valid) {
+        parse_device_header(udp_payload, &sw->device);
+        sw->device_info_valid = true;
     }
 
     // Parse port data
@@ -196,13 +225,14 @@ static void health_parse_response(const uint8_t *packet, size_t len, struct heal
         // Store in correct slot by port number
         uint16_t pnum = temp_port.port_number;
         if (pnum < HEALTH_MAX_PORTS) {
-            cycle->ports[pnum] = temp_port;
+            sw->ports[pnum] = temp_port;
         }
 
         port_ptr += HEALTH_PORT_DATA_SIZE;
     }
 
-    cycle->responses_received++;
+    sw->responses_received++;
+    cycle->total_responses++;
 }
 
 // ==========================================
@@ -232,33 +262,38 @@ static double convert_fpga_temperature(uint16_t raw)
 // TABLE PRINTING
 // ==========================================
 
-static void health_print_table(const struct health_cycle_data *cycle)
+static void health_print_switch_section(const struct health_switch_data *sw,
+                                        const char *switch_name,
+                                        int port_start, int port_end)
 {
-    const struct health_device_info *dev = &cycle->device;
+    const struct health_device_info *dev = &sw->device;
 
-    // Device Status Header
-    printf("[HEALTH] ============ Device Status ============\n");
-    printf("[HEALTH] DevID=0x%04X | OpType=0x%02X | CfgType=0x%02X | Mode=0x%02X | Ports=%d\n",
-           dev->device_id, dev->operation_type, dev->config_type, dev->sw_mode, dev->port_count);
-    printf("[HEALTH] FW=%d.%d.%d | ES_FW=%d.%d.%d | ConfigID=%d\n",
-           dev->fw_major, dev->fw_minor, dev->fw_patch,
-           dev->es_fw_major, dev->es_fw_minor, dev->es_fw_patch,
-           dev->config_id);
-    printf("[HEALTH] Temp=%.2fC | Volt=%.4fV | EGI=%us | PowerUp=%us | InstTime=%us\n",
-           convert_fpga_temperature(dev->fpga_temp), convert_fpga_voltage(dev->fpga_voltage),
-           dev->egi_time_sec, dev->power_up_time, dev->instant_time);
-    printf("[HEALTH] TxTotal=%lu | RxTotal=%lu\n",
-           (unsigned long)dev->tx_total_count, (unsigned long)dev->rx_total_count);
+    // Switch Device Status Header
+    printf("[HEALTH] ============ %s Switch ============\n", switch_name);
+    if (sw->device_info_valid) {
+        printf("[HEALTH] DevID=0x%04X | OpType=0x%02X | CfgType=0x%02X | Mode=0x%02X | Ports=%d\n",
+               dev->device_id, dev->operation_type, dev->config_type, dev->sw_mode, dev->port_count);
+        printf("[HEALTH] FW=%d.%d.%d | ES_FW=%d.%d.%d | ConfigID=%d\n",
+               dev->fw_major, dev->fw_minor, dev->fw_patch,
+               dev->es_fw_major, dev->es_fw_minor, dev->es_fw_patch,
+               dev->config_id);
+        printf("[HEALTH] Temp=%.2fC | Volt=%.4fV | EGI=%us | PowerUp=%us | InstTime=%us\n",
+               convert_fpga_temperature(dev->fpga_temp), convert_fpga_voltage(dev->fpga_voltage),
+               dev->egi_time_sec, dev->power_up_time, dev->instant_time);
+        printf("[HEALTH] TxTotal=%lu | RxTotal=%lu\n",
+               (unsigned long)dev->tx_total_count, (unsigned long)dev->rx_total_count);
+    } else {
+        printf("[HEALTH] Device info not received\n");
+    }
 
     // Port Status Table Header
-    printf("[HEALTH] ============ Port Status (%d/%d received) ============\n",
-           cycle->responses_received, HEALTH_MONITOR_EXPECTED_RESPONSES);
+    printf("[HEALTH] --- %s Ports (%d responses) ---\n", switch_name, sw->responses_received);
     printf("[HEALTH] Port |    TxCnt |    RxCnt | PolDrop | VLDrop | HP_Ovf | LP_Ovf | BE_Ovf |\n");
     printf("[HEALTH] -----|----------|----------|---------|--------|--------|--------|--------|\n");
 
-    // Port Data Rows (sorted 0-34)
-    for (int i = 0; i < HEALTH_MAX_PORTS; i++) {
-        const struct health_port_info *p = &cycle->ports[i];
+    // Port Data Rows
+    for (int i = port_start; i < port_end; i++) {
+        const struct health_port_info *p = &sw->ports[i];
         if (p->valid) {
             printf("[HEALTH] %4d | %8lu | %8lu | %7lu | %6lu | %6lu | %6lu | %6lu |\n",
                    i,
@@ -273,7 +308,22 @@ static void health_print_table(const struct health_cycle_data *cycle)
             printf("[HEALTH] %4d |      N/A |      N/A |     N/A |    N/A |    N/A |    N/A |    N/A |\n", i);
         }
     }
-    printf("[HEALTH] ================================================\n");
+}
+
+static void health_print_table(const struct health_cycle_data *cycle)
+{
+    printf("[HEALTH] ==================== Health Monitor (%d/%d responses) ====================\n",
+           cycle->total_responses, HEALTH_MONITOR_EXPECTED_RESPONSES);
+
+    // Manager Switch: ports 16-34
+    health_print_switch_section(&cycle->manager, "Manager",
+                                HEALTH_MANAGER_PORT_START, HEALTH_MAX_PORTS);
+
+    // Assistant Switch: ports 0-15
+    health_print_switch_section(&cycle->assistant, "Assistant",
+                                0, HEALTH_ASSISTANT_PORT_COUNT);
+
+    printf("[HEALTH] ========================================================================\n");
 }
 
 static int get_interface_index(const char *ifname)
@@ -386,7 +436,7 @@ static int receive_health_responses(int timeout_ms, struct health_cycle_data *cy
     uint8_t buffer[HEALTH_MONITOR_RX_BUFFER_SIZE];
     uint64_t start_time = get_time_ms();
 
-    while (cycle->responses_received < HEALTH_MONITOR_EXPECTED_RESPONSES) {
+    while (cycle->total_responses < HEALTH_MONITOR_EXPECTED_RESPONSES) {
         // Calculate remaining timeout
         uint64_t elapsed = get_time_ms() - start_time;
         if (elapsed >= (uint64_t)timeout_ms) {
@@ -471,10 +521,10 @@ static void *health_monitor_thread_func(void *arg)
 
         // 5. Update statistics
         pthread_spin_lock(&state->stats_lock);
-        state->stats.responses_received += cycle.responses_received;
+        state->stats.responses_received += cycle.total_responses;
         state->stats.last_cycle_time_ms = cycle_time;
-        state->stats.last_response_count = cycle.responses_received;
-        if (cycle.responses_received < HEALTH_MONITOR_EXPECTED_RESPONSES) {
+        state->stats.last_response_count = cycle.total_responses;
+        if (cycle.total_responses < HEALTH_MONITOR_EXPECTED_RESPONSES) {
             state->stats.timeouts++;
         }
         pthread_spin_unlock(&state->stats_lock);

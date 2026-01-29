@@ -30,6 +30,15 @@
 #define HEALTH_PKT_SIZE_3_PORTS      438   // 3 ports
 #define HEALTH_PKT_SIZE_MCU          84    // MCU data (skip)
 
+// Status enable values (identifies switch source)
+#define HEALTH_STATUS_MANAGER        0x01  // Manager switch
+#define HEALTH_STATUS_ASSISTANT      0x03  // Assistant switch
+#define HEALTH_STATUS_MCU            0x05  // MCU data (skipped)
+
+// Port ranges per switch
+#define HEALTH_ASSISTANT_PORT_COUNT  16    // Ports 0-15
+#define HEALTH_MANAGER_PORT_START   16    // Ports 16-34
+
 // ==========================================
 // DEVICE HEADER OFFSETS (from UDP payload)
 // ==========================================
@@ -135,13 +144,22 @@ struct health_port_info {
 };
 
 /**
- * @brief Complete health cycle data (all responses combined)
+ * @brief Per-switch health data (device info + ports)
+ */
+struct health_switch_data {
+    struct health_device_info device;                    // Device info for this switch
+    struct health_port_info   ports[HEALTH_MAX_PORTS];   // Port data (indexed by port number)
+    uint8_t  responses_received;                         // Number of responses for this switch
+    bool     device_info_valid;                          // Device info parsed flag
+};
+
+/**
+ * @brief Complete health cycle data (manager + assistant)
  */
 struct health_cycle_data {
-    struct health_device_info device;              // Device info
-    struct health_port_info   ports[HEALTH_MAX_PORTS];  // Port data (0-34)
-    uint8_t  responses_received;                   // Number of responses received
-    bool     device_info_valid;                    // Device info parsed flag
+    struct health_switch_data manager;    // Manager switch (ports 16-34, status_enable=0x01)
+    struct health_switch_data assistant;  // Assistant switch (ports 0-15, status_enable=0x03)
+    uint8_t  total_responses;            // Total responses received this cycle
 };
 
 #endif // HEALTH_TYPES_H

@@ -491,6 +491,10 @@ static int receive_health_responses(int timeout_ms, struct health_cycle_data *cy
                 break;
             }
 
+            printf("[HEALTH][DBG] recv len=%zd, is_health=%d, mac4_5=%02X%02X\n",
+                   len, is_health_response(buffer, len),
+                   (len > 5) ? buffer[4] : 0, (len > 5) ? buffer[5] : 0);
+
             // Check if this is a health response and parse it
             if (is_health_response(buffer, len)) {
                 health_parse_response(buffer, len, cycle);
@@ -499,6 +503,7 @@ static int receive_health_responses(int timeout_ms, struct health_cycle_data *cy
         }
     }
 
+    printf("[HEALTH][DBG] receive done: total_responses=%d\n", cycle->total_responses);
     return 0;
 }
 

@@ -197,17 +197,34 @@ static void health_parse_response(const uint8_t *packet, size_t len, struct heal
         port_data_offset = HEALTH_MINI_HEADER_SIZE;
     } else if (len == HEALTH_PKT_SIZE_MCU) {
         // 84 bytes: MCU data - skip
+        printf("[HEALTH][DBG] Skipping MCU packet (size=%zu)\n", len);
         return;
     } else {
         // Unknown packet size - skip
+        printf("[HEALTH][DBG] Unknown packet size=%zu, skipping\n", len);
         return;
+    }
+
+    printf("[HEALTH][DBG] Packet size=%zu, has_dev_hdr=%d, port_count=%d\n",
+           len, has_device_header, port_count_in_packet);
+
+    if (has_device_header) {
+        printf("[HEALTH][DBG] status_enable=0x%02X\n", udp_payload[DEV_OFF_STATUS_ENABLE]);
+    } else {
+        uint16_t fp = parse_2byte_be(udp_payload + port_data_offset + PORT_OFF_PORT_NUMBER);
+        printf("[HEALTH][DBG] first_port=%u\n", fp);
     }
 
     // Determine which switch this packet belongs to
     struct health_switch_data *sw = determine_switch(udp_payload, has_device_header,
                                                       port_data_offset, cycle);
-    if (!sw)
+    if (!sw) {
+        printf("[HEALTH][DBG] determine_switch returned NULL, skipping\n");
         return;  // MCU or unknown status
+    }
+
+    printf("[HEALTH][DBG] Routed to %s switch\n",
+           (sw == &cycle->manager) ? "Manager" : "Assistant");
 
     // Parse device header if present (only once per switch)
     if (has_device_header && !sw->device_info_valid) {
@@ -470,6 +487,7 @@ static int receive_health_responses(int timeout_ms, struct health_cycle_data *cy
 
             // Check if this is a health response and parse it
             if (is_health_response(buffer, len)) {
+                printf("[HEALTH][DBG] Health response received, len=%zd\n", len);
                 health_parse_response(buffer, len, cycle);
             }
             // else: ignore non-health packets (PRBS traffic etc.)

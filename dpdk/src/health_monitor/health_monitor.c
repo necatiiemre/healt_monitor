@@ -217,6 +217,17 @@ static double convert_fpga_voltage(uint16_t raw)
     return milli_volt / 1000.0;
 }
 
+static double convert_fpga_temperature(uint16_t raw)
+{
+    uint16_t integer_part = (raw & 0x7FF0) >> 4;
+    uint16_t fractional_part = raw & 0xF;
+    // String concat: str(integer) + "." + str(fractional)
+    // fractional 0-9 -> 1 digit, 10-15 -> 2 digits
+    double divisor = (fractional_part >= 10) ? 100.0 : 10.0;
+    double kelvin = (double)integer_part + (double)fractional_part / divisor;
+    return kelvin - 273.15;
+}
+
 // ==========================================
 // TABLE PRINTING
 // ==========================================
@@ -233,8 +244,8 @@ static void health_print_table(const struct health_cycle_data *cycle)
            dev->fw_major, dev->fw_minor, dev->fw_patch,
            dev->es_fw_major, dev->es_fw_minor, dev->es_fw_patch,
            dev->config_id);
-    printf("[HEALTH] Temp=%d | Volt=%.4fV | EGI=%us | PowerUp=%us | InstTime=%us\n",
-           dev->fpga_temp, convert_fpga_voltage(dev->fpga_voltage),
+    printf("[HEALTH] Temp=%.2fC | Volt=%.4fV | EGI=%us | PowerUp=%us | InstTime=%us\n",
+           convert_fpga_temperature(dev->fpga_temp), convert_fpga_voltage(dev->fpga_voltage),
            dev->egi_time_sec, dev->power_up_time, dev->instant_time);
     printf("[HEALTH] TxTotal=%lu | RxTotal=%lu\n",
            (unsigned long)dev->tx_total_count, (unsigned long)dev->rx_total_count);

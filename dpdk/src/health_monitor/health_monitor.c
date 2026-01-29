@@ -453,10 +453,14 @@ static int receive_health_responses(int timeout_ms, struct health_cycle_data *cy
     uint8_t buffer[HEALTH_MONITOR_RX_BUFFER_SIZE];
     uint64_t start_time = get_time_ms();
 
+    printf("[HEALTH][DBG] receive_health_responses entered, timeout=%dms, total_responses=%d\n",
+           timeout_ms, cycle->total_responses);
+
     while (cycle->total_responses < HEALTH_MONITOR_EXPECTED_RESPONSES) {
         // Calculate remaining timeout
         uint64_t elapsed = get_time_ms() - start_time;
         if (elapsed >= (uint64_t)timeout_ms) {
+            printf("[HEALTH][DBG] Timeout after %lums\n", (unsigned long)elapsed);
             break;  // Timeout
         }
         int remaining = timeout_ms - (int)elapsed;
@@ -474,6 +478,7 @@ static int receive_health_responses(int timeout_ms, struct health_cycle_data *cy
         }
 
         if (ret == 0) {
+            printf("[HEALTH][DBG] Poll timeout, no packets\n");
             break;  // Timeout
         }
 
@@ -484,6 +489,9 @@ static int receive_health_responses(int timeout_ms, struct health_cycle_data *cy
                 fprintf(stderr, "[HEALTH] Recv error: %s\n", strerror(errno));
                 break;
             }
+
+            printf("[HEALTH][DBG] Recv packet len=%zd, is_health=%d\n",
+                   len, is_health_response(buffer, len));
 
             // Check if this is a health response and parse it
             if (is_health_response(buffer, len)) {

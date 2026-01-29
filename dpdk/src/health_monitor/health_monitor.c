@@ -206,6 +206,18 @@ static void health_parse_response(const uint8_t *packet, size_t len, struct heal
 }
 
 // ==========================================
+// CONVERSION FUNCTIONS
+// ==========================================
+
+static double convert_fpga_voltage(uint16_t raw)
+{
+    uint16_t integer_part = (raw & 0x7FF8) >> 3;
+    uint16_t fractional_part = raw & 0x7;
+    double milli_volt = (double)integer_part + (double)fractional_part / 10.0;
+    return milli_volt / 1000.0;
+}
+
+// ==========================================
 // TABLE PRINTING
 // ==========================================
 
@@ -221,8 +233,9 @@ static void health_print_table(const struct health_cycle_data *cycle)
            dev->fw_major, dev->fw_minor, dev->fw_patch,
            dev->es_fw_major, dev->es_fw_minor, dev->es_fw_patch,
            dev->config_id);
-    printf("[HEALTH] Temp=%d | Volt=%d | EGI=%us | PowerUp=%us | InstTime=%us\n",
-           dev->fpga_temp, dev->fpga_voltage, dev->egi_time_sec, dev->power_up_time, dev->instant_time);
+    printf("[HEALTH] Temp=%d | Volt=%.4fV | EGI=%us | PowerUp=%us | InstTime=%us\n",
+           dev->fpga_temp, convert_fpga_voltage(dev->fpga_voltage),
+           dev->egi_time_sec, dev->power_up_time, dev->instant_time);
     printf("[HEALTH] TxTotal=%lu | RxTotal=%lu\n",
            (unsigned long)dev->tx_total_count, (unsigned long)dev->rx_total_count);
 

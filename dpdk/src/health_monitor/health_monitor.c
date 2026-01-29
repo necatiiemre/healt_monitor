@@ -159,32 +159,24 @@ static void health_parse_response(const uint8_t *packet, size_t len, struct heal
     int port_count_in_packet = 0;
     int port_data_offset = 0;
 
-    // DEBUG: Print only packet size for health responses
-    printf("[HEALTH-DBG] PKT size=%zu ", len);
-
     if (len == HEALTH_PKT_SIZE_WITH_HEADER) {
         // 1187 bytes: Device header + 8 ports
-        printf("type=WITH_HDR ");
         has_device_header = true;
         port_count_in_packet = 8;
         port_data_offset = HEALTH_DEVICE_HEADER_SIZE;
     } else if (len == HEALTH_PKT_SIZE_8_PORTS) {
         // 1083 bytes: Mini header + 8 ports
-        printf("type=8_PORTS ");
         port_count_in_packet = 8;
         port_data_offset = HEALTH_MINI_HEADER_SIZE;
     } else if (len == HEALTH_PKT_SIZE_3_PORTS) {
         // 438 bytes: Mini header + 3 ports
-        printf("type=3_PORTS ");
         port_count_in_packet = 3;
         port_data_offset = HEALTH_MINI_HEADER_SIZE;
     } else if (len == HEALTH_PKT_SIZE_MCU) {
         // 84 bytes: MCU data - skip
-        printf("type=MCU (skip)\n");
         return;
     } else {
         // Unknown packet size - skip
-        printf("type=UNKNOWN (skip)\n");
         return;
     }
 
@@ -194,26 +186,21 @@ static void health_parse_response(const uint8_t *packet, size_t len, struct heal
         cycle->device_info_valid = true;
     }
 
-    // Parse port data and collect port numbers for debug
+    // Parse port data
     const uint8_t *port_ptr = udp_payload + port_data_offset;
-    printf("ports=[");
     for (int i = 0; i < port_count_in_packet; i++) {
         struct health_port_info temp_port;
         memset(&temp_port, 0, sizeof(temp_port));
         parse_port_data(port_ptr, &temp_port);
 
-        uint16_t pnum = temp_port.port_number;
-        printf("%d", pnum);
-        if (i < port_count_in_packet - 1) printf(",");
-
         // Store in correct slot by port number
+        uint16_t pnum = temp_port.port_number;
         if (pnum < HEALTH_MAX_PORTS) {
             cycle->ports[pnum] = temp_port;
         }
 
         port_ptr += HEALTH_PORT_DATA_SIZE;
     }
-    printf("]\n");
 
     cycle->responses_received++;
 }
